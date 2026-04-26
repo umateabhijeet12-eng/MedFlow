@@ -66,23 +66,32 @@ export default function Signup() {
     }
 
     // Create clinic record
-    const { error: clinicError } = await supabase.from('clinics').insert([{
-      user_id: authData.user.id,
-      clinic_name: form.clinic_name,
-      doctor_name: form.doctor_name,
-      doctor_specialization: form.doctor_specialization,
-      clinic_phone: form.clinic_phone,
-      clinic_city: form.clinic_city,
-      working_hours_start: form.working_hours_start,
-      working_hours_end: form.working_hours_end,
-      appointment_duration: parseInt(form.appointment_duration),
-    }])
+    const { data: clinicData, error: clinicError } = await supabase
+      .from('clinics')
+      .insert([{
+        user_id: authData.user.id,
+        clinic_name: form.clinic_name,
+        doctor_name: form.doctor_name,
+        doctor_specialization: form.doctor_specialization,
+        clinic_phone: form.clinic_phone,
+        clinic_city: form.clinic_city,
+        working_hours_start: form.working_hours_start,
+        working_hours_end: form.working_hours_end,
+        appointment_duration: parseInt(form.appointment_duration),
+      }])
+      .select()
 
     if (clinicError) {
       setError('Account created but clinic setup failed. Please contact support.')
       setLoading(false)
       return
     }
+
+    // Create default services based on specialization
+    await supabase.rpc('create_default_services', {
+      p_clinic_id: clinicData[0].id,
+      p_specialization: form.doctor_specialization
+    })
 
     // Sign in immediately
     await supabase.auth.signInWithPassword({
@@ -104,7 +113,6 @@ export default function Signup() {
         border: '1px solid #e5e7eb', padding: '40px',
         width: '100%', maxWidth: '480px'
       }}>
-        {/* Header */}
         <div style={{ textAlign: 'center', marginBottom: '32px' }}>
           <div style={{
             width: '44px', height: '44px', background: '#16a34a',
@@ -119,7 +127,6 @@ export default function Signup() {
           </p>
         </div>
 
-        {/* Step indicator */}
         <div style={{ display: 'flex', gap: '8px', marginBottom: '28px' }}>
           {[1, 2].map(s => (
             <div key={s} style={{
@@ -129,76 +136,34 @@ export default function Signup() {
           ))}
         </div>
 
-        {/* Step 1 — Account details */}
         {step === 1 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             <p style={{ fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '4px' }}>
               Step 1 — Account Details
             </p>
-            <div>
-              <label style={{ fontSize: '13px', fontWeight: '500', color: '#374151', display: 'block', marginBottom: '6px' }}>
-                Email *
-              </label>
-              <input
-                type="email"
-                placeholder="doctor@clinic.com"
-                value={form.email}
-                onChange={e => update('email', e.target.value)}
-                style={{
-                  width: '100%', padding: '10px 12px', borderRadius: '8px',
-                  border: '1px solid #e5e7eb', fontSize: '14px',
-                  outline: 'none', color: '#111827', boxSizing: 'border-box'
-                }}
-              />
-            </div>
-            <div>
-              <label style={{ fontSize: '13px', fontWeight: '500', color: '#374151', display: 'block', marginBottom: '6px' }}>
-                Password *
-              </label>
-              <input
-                type="password"
-                placeholder="Min 6 characters"
-                value={form.password}
-                onChange={e => update('password', e.target.value)}
-                style={{
-                  width: '100%', padding: '10px 12px', borderRadius: '8px',
-                  border: '1px solid #e5e7eb', fontSize: '14px',
-                  outline: 'none', color: '#111827', boxSizing: 'border-box'
-                }}
-              />
-            </div>
-            <div>
-              <label style={{ fontSize: '13px', fontWeight: '500', color: '#374151', display: 'block', marginBottom: '6px' }}>
-                Clinic Name *
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. Mehta Dental Clinic"
-                value={form.clinic_name}
-                onChange={e => update('clinic_name', e.target.value)}
-                style={{
-                  width: '100%', padding: '10px 12px', borderRadius: '8px',
-                  border: '1px solid #e5e7eb', fontSize: '14px',
-                  outline: 'none', color: '#111827', boxSizing: 'border-box'
-                }}
-              />
-            </div>
-            <div>
-              <label style={{ fontSize: '13px', fontWeight: '500', color: '#374151', display: 'block', marginBottom: '6px' }}>
-                Doctor Name *
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. Rahul Mehta"
-                value={form.doctor_name}
-                onChange={e => update('doctor_name', e.target.value)}
-                style={{
-                  width: '100%', padding: '10px 12px', borderRadius: '8px',
-                  border: '1px solid #e5e7eb', fontSize: '14px',
-                  outline: 'none', color: '#111827', boxSizing: 'border-box'
-                }}
-              />
-            </div>
+            {[
+              { key: 'email', label: 'Email *', placeholder: 'doctor@clinic.com', type: 'email' },
+              { key: 'password', label: 'Password *', placeholder: 'Min 6 characters', type: 'password' },
+              { key: 'clinic_name', label: 'Clinic Name *', placeholder: 'e.g. Mehta Dental Clinic', type: 'text' },
+              { key: 'doctor_name', label: 'Doctor Name *', placeholder: 'e.g. Rahul Mehta', type: 'text' },
+            ].map(field => (
+              <div key={field.key}>
+                <label style={{ fontSize: '13px', fontWeight: '500', color: '#374151', display: 'block', marginBottom: '6px' }}>
+                  {field.label}
+                </label>
+                <input
+                  type={field.type}
+                  placeholder={field.placeholder}
+                  value={form[field.key]}
+                  onChange={e => update(field.key, e.target.value)}
+                  style={{
+                    width: '100%', padding: '10px 12px', borderRadius: '8px',
+                    border: '1px solid #e5e7eb', fontSize: '14px',
+                    outline: 'none', color: '#111827', boxSizing: 'border-box'
+                  }}
+                />
+              </div>
+            ))}
             <div>
               <label style={{ fontSize: '13px', fontWeight: '500', color: '#374151', display: 'block', marginBottom: '6px' }}>
                 Specialization *
@@ -241,44 +206,32 @@ export default function Signup() {
           </div>
         )}
 
-        {/* Step 2 — Clinic details */}
         {step === 2 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             <p style={{ fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '4px' }}>
               Step 2 — Clinic Details
             </p>
-            <div>
-              <label style={{ fontSize: '13px', fontWeight: '500', color: '#374151', display: 'block', marginBottom: '6px' }}>
-                Clinic Phone
-              </label>
-              <input
-                type="text"
-                placeholder="+91 98765 43210"
-                value={form.clinic_phone}
-                onChange={e => update('clinic_phone', e.target.value)}
-                style={{
-                  width: '100%', padding: '10px 12px', borderRadius: '8px',
-                  border: '1px solid #e5e7eb', fontSize: '14px',
-                  outline: 'none', color: '#111827', boxSizing: 'border-box'
-                }}
-              />
-            </div>
-            <div>
-              <label style={{ fontSize: '13px', fontWeight: '500', color: '#374151', display: 'block', marginBottom: '6px' }}>
-                City
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. Nagpur"
-                value={form.clinic_city}
-                onChange={e => update('clinic_city', e.target.value)}
-                style={{
-                  width: '100%', padding: '10px 12px', borderRadius: '8px',
-                  border: '1px solid #e5e7eb', fontSize: '14px',
-                  outline: 'none', color: '#111827', boxSizing: 'border-box'
-                }}
-              />
-            </div>
+            {[
+              { key: 'clinic_phone', label: 'Clinic Phone', placeholder: '+91 98765 43210', type: 'text' },
+              { key: 'clinic_city', label: 'City', placeholder: 'e.g. Nagpur', type: 'text' },
+            ].map(field => (
+              <div key={field.key}>
+                <label style={{ fontSize: '13px', fontWeight: '500', color: '#374151', display: 'block', marginBottom: '6px' }}>
+                  {field.label}
+                </label>
+                <input
+                  type={field.type}
+                  placeholder={field.placeholder}
+                  value={form[field.key]}
+                  onChange={e => update(field.key, e.target.value)}
+                  style={{
+                    width: '100%', padding: '10px 12px', borderRadius: '8px',
+                    border: '1px solid #e5e7eb', fontSize: '14px',
+                    outline: 'none', color: '#111827', boxSizing: 'border-box'
+                  }}
+                />
+              </div>
+            ))}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
               <div>
                 <label style={{ fontSize: '13px', fontWeight: '500', color: '#374151', display: 'block', marginBottom: '6px' }}>
@@ -334,25 +287,17 @@ export default function Signup() {
             {error && <p style={{ color: '#ef4444', fontSize: '13px' }}>{error}</p>}
 
             <div style={{ display: 'flex', gap: '12px' }}>
-              <button
-                onClick={() => setStep(1)}
-                style={{
-                  flex: 1, background: '#fff', color: '#6b7280', padding: '11px',
-                  borderRadius: '8px', border: '1px solid #e5e7eb', cursor: 'pointer',
-                  fontSize: '14px'
-                }}
-              >
+              <button onClick={() => setStep(1)} style={{
+                flex: 1, background: '#fff', color: '#6b7280', padding: '11px',
+                borderRadius: '8px', border: '1px solid #e5e7eb', cursor: 'pointer', fontSize: '14px'
+              }}>
                 ← Back
               </button>
-              <button
-                onClick={handleSignup}
-                disabled={loading}
-                style={{
-                  flex: 2, background: '#16a34a', color: '#fff', padding: '11px',
-                  borderRadius: '8px', border: 'none', cursor: 'pointer',
-                  fontSize: '15px', fontWeight: '500', opacity: loading ? 0.7 : 1
-                }}
-              >
+              <button onClick={handleSignup} disabled={loading} style={{
+                flex: 2, background: '#16a34a', color: '#fff', padding: '11px',
+                borderRadius: '8px', border: 'none', cursor: 'pointer',
+                fontSize: '15px', fontWeight: '500', opacity: loading ? 0.7 : 1
+              }}>
                 {loading ? 'Setting up...' : 'Create Account'}
               </button>
             </div>
