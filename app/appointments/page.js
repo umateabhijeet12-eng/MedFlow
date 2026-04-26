@@ -57,6 +57,8 @@ export default function Appointments() {
   const [saving, setSaving] = useState(false)
   const [filter, setFilter] = useState('today')
   const [slots, setSlots] = useState([])
+  const [services, setServices] = useState([])
+  const [revenue, setRevenue] = useState(0)
   const [form, setForm] = useState({
     patient_name: '',
     patient_phone: '',
@@ -64,6 +66,9 @@ export default function Appointments() {
     reason: '',
     appointment_date: new Date().toISOString().split('T')[0],
     appointment_time: '',
+    service_id: '',
+    fee: '',
+    payment_status: 'unpaid',
   })
 
   useEffect(() => {
@@ -80,6 +85,12 @@ export default function Appointments() {
       if (data) {
         setClinic(data)
         setForm(f => ({ ...f, doctor: data.doctor_name || '' }))
+        // Fetch services
+        const { data: servicesData } = await supabase
+          .from('services')
+          .select('*')
+          .eq('clinic_id', data.id)
+        setServices(servicesData || [])
       }
       setLoading(false)
     }
@@ -97,7 +108,7 @@ export default function Appointments() {
   const fetchAppointments = async () => {
     let query = supabase
       .from('appointments')
-      .select('*')
+      .select('*, services(name)')
       .eq('clinic_id', clinic.id)
       .order('appointment_date', { ascending: true })
       .order('appointment_time', { ascending: true })
@@ -109,6 +120,16 @@ export default function Appointments() {
 
     const { data } = await query
     setAppointments(data || [])
+
+    // Fetch daily revenue
+    const { data: revenueData } = await supabase
+      .from('appointments')
+      .select('fee')
+      .eq('clinic_id', clinic.id)
+      .eq('appointment_date', today)
+      .eq('payment_status', 'paid')
+    const total = revenueData?.reduce((sum, a) => sum + (parseFloat(a.fee) || 0), 0) || 0
+    setRevenue(total)
   }
 
   const generateSlots = async () => {
@@ -139,7 +160,7 @@ export default function Appointments() {
   }
 
   const handleAdd = async () => {
-    if (!form.patient_name || !form.patient_phone || !form.appointment_time) return
+    if (!form.patient_name || !form.patient_phone || !form.appointment_time || !form.service_id) return
     setSaving(true)
 
     // Save appointment
@@ -168,6 +189,9 @@ export default function Appointments() {
       reason: '',
       appointment_date: new Date().toISOString().split('T')[0],
       appointment_time: '',
+      service_id: '',
+      fee: '',
+      payment_status: 'unpaid',
     })
     setShowForm(false)
     await fetchAppointments()
@@ -176,6 +200,12 @@ export default function Appointments() {
 
   const updateStatus = async (id, status) => {
     await supabase.from('appointments').update({ status }).eq('id', id)
+    await fetchAppointments()
+  }
+
+  const togglePayment = async (id, currentStatus) => {
+    const newStatus = currentStatus === 'paid' ? 'unpaid' : 'paid'
+    await supabase.from('appointments').update({ payment_status: newStatus }).eq('id', id)
     await fetchAppointments()
   }
 
@@ -191,13 +221,19 @@ export default function Appointments() {
               {clinic?.clinic_name || 'Your clinic'}
             </p>
           </div>
-          <button onClick={() => setShowForm(true)} style={{
-            background: '#16a34a', color: '#fff', padding: '10px 20px',
-            borderRadius: '8px', border: 'none', cursor: 'pointer',
-            fontSize: '14px', fontWeight: '500'
-          }}>
-            + New Appointment
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: '18px', fontWeight: '600', color: '#16a34a' }}>₹{revenue.toFixed(2)}</div>
+              <div style={{ fontSize: '12px', color: '#6b7280' }}>Today's Revenue</div>
+            </div>
+            <button onClick={() => setShowForm(true)} style={{
+              background: '#16a34a', color: '#fff', padding: '10px 20px',
+              borderRadius: '8px', border: 'none', cursor: 'pointer',
+              fontSize: '14px', fontWeight: '500'
+            }}>
+              + New Appointment
+            </button>
+          </div>
         </div>
 
         {/* New appointment form */}
@@ -233,6 +269,46 @@ export default function Appointments() {
                   />
                 </div>
               ))}
+
+              <div>
+                <label style={{ fontSize: '13px', fontWeight: '500', color: '#374151', display: 'block', marginBottom: '6px' }}>
+                  Service
+                </label>
+                <select
+                  value={form.service_id}
+                  onChange={e => {
+                    const service = services.find(s => s.id === e.target.value)
+                    setForm({ ...form, service_id: e.target.value, fee: service ? service.price : '' })
+                  }}
+                  style={{
+                    width: '100%', padding: '10px 12px', borderRadius: '8px',
+                    border: '1px solid #e5e7eb', fontSize: '14px',
+                    outline: 'none', color: '#111827', boxSizing: 'border-box'
+                  }}
+                >
+                  <option value="">Select Service</option>
+                  {services.map(s => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label style={{ fontSize: '13px', fontWeight: '500', color: '#374151', display: 'block', marginBottom: '6px' }}>
+                  Fee
+                </label>
+                <input
+                  type="number"
+                  placeholder="Fee"
+                  value={form.fee}
+                  readOnly
+                  style={{
+                    width: '100%', padding: '10px 12px', borderRadius: '8px',
+                    border: '1px solid #e5e7eb', fontSize: '14px',
+                    outline: 'none', color: '#111827', boxSizing: 'border-box', background: '#f9fafb'
+                  }}
+                />
+              </div>
 
               <div>
                 <label style={{ fontSize: '13px', fontWeight: '500', color: '#374151', display: 'block', marginBottom: '6px' }}>
@@ -349,7 +425,7 @@ export default function Appointments() {
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid #e5e7eb', background: '#f9fafb' }}>
-                  {['Time', 'Patient', 'Phone', 'Doctor', 'Reason', 'Status', 'Actions'].map(h => (
+                  {['Time', 'Patient', 'Phone', 'Doctor', 'Reason', 'Fee', 'Status', 'Payment', 'Actions'].map(h => (
                     <th key={h} style={{
                       padding: '12px 16px', textAlign: 'left',
                       fontSize: '12px', fontWeight: '600',
@@ -374,6 +450,7 @@ export default function Appointments() {
                     <td style={{ padding: '14px 16px', fontSize: '14px', color: '#6b7280' }}>{a.patient_phone}</td>
                     <td style={{ padding: '14px 16px', fontSize: '14px', color: '#6b7280' }}>{a.doctor}</td>
                     <td style={{ padding: '14px 16px', fontSize: '14px', color: '#6b7280' }}>{a.reason || '—'}</td>
+                    <td style={{ padding: '14px 16px', fontSize: '14px', color: '#6b7280' }}>₹{a.fee}</td>
                     <td style={{ padding: '14px 16px' }}>
                       <span style={{
                         padding: '4px 10px', borderRadius: '20px', fontSize: '12px', fontWeight: '500',
@@ -382,6 +459,20 @@ export default function Appointments() {
                       }}>
                         {STATUS_COLORS[a.status]?.label}
                       </span>
+                    </td>
+                    <td style={{ padding: '14px 16px' }}>
+                      <button
+                        onClick={() => togglePayment(a.id, a.payment_status)}
+                        style={{
+                          padding: '4px 8px', borderRadius: '6px', fontSize: '12px',
+                          border: '1px solid', cursor: 'pointer',
+                          background: a.payment_status === 'paid' ? '#16a34a' : '#fff',
+                          color: a.payment_status === 'paid' ? '#fff' : '#16a34a',
+                          borderColor: '#16a34a'
+                        }}
+                      >
+                        {a.payment_status === 'paid' ? 'Paid' : 'Unpaid'}
+                      </button>
                     </td>
                     <td style={{ padding: '14px 16px' }}>
                       <select
