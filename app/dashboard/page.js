@@ -31,6 +31,7 @@ const NavBar = () => (
         { label: 'Appointments', href: '/appointments' },
         { label: 'Follow-ups', href: '/followups' },
         { label: 'Reviews', href: '/reviews' },
+        { label: 'Settings', href: '/settings' },
       ].map(link => (
         <Link key={link.href} href={link.href} style={{ fontSize: '14px', color: '#6b7280', fontWeight: '500' }}>
           {link.label}
