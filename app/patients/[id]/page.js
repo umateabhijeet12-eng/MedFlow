@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, use } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@supabase/supabase-js'
@@ -49,9 +49,11 @@ const STATUS_COLORS = {
 }
 
 export default function PatientProfile({ params }) {
+  const { id } = use(params)
   const router = useRouter()
   const [patient, setPatient] = useState(null)
   const [appointments, setAppointments] = useState([])
+  const [prescriptions, setPrescriptions] = useState([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -62,11 +64,12 @@ export default function PatientProfile({ params }) {
       const { data: patientData } = await supabase
         .from('patients')
         .select('*')
-        .eq('id', params.id)
+        .eq('id', id)
         .single()
 
       if (patientData) {
         setPatient(patientData)
+
         const { data: apptData } = await supabase
           .from('appointments')
           .select('*')
@@ -74,11 +77,18 @@ export default function PatientProfile({ params }) {
           .eq('patient_phone', patientData.phone)
           .order('appointment_date', { ascending: false })
         setAppointments(apptData || [])
+
+        const { data: rxData } = await supabase
+          .from('prescriptions')
+          .select('*')
+          .eq('patient_id', id)
+          .order('created_at', { ascending: false })
+        setPrescriptions(rxData || [])
       }
       setLoading(false)
     }
     init()
-  }, [params.id])
+  }, [id])
 
   const lastVisit = appointments.find(a => a.status === 'completed')
   const totalVisits = appointments.filter(a => a.status === 'completed').length
@@ -181,7 +191,7 @@ export default function PatientProfile({ params }) {
 
         <div style={{
           background: '#fff', borderRadius: '12px',
-          border: '1px solid #e5e7eb', overflow: 'hidden'
+          border: '1px solid #e5e7eb', overflow: 'hidden', marginBottom: '24px'
         }}>
           <div style={{ padding: '16px 20px', borderBottom: '1px solid #e5e7eb' }}>
             <h2 style={{ fontSize: '15px', fontWeight: '600', color: '#111827' }}>Appointment History</h2>
@@ -236,6 +246,74 @@ export default function PatientProfile({ params }) {
                 ))}
               </tbody>
             </table>
+          )}
+        </div>
+
+        <div style={{
+          background: '#fff', borderRadius: '12px',
+          border: '1px solid #e5e7eb', overflow: 'hidden'
+        }}>
+          <div style={{ padding: '16px 20px', borderBottom: '1px solid #e5e7eb' }}>
+            <h2 style={{ fontSize: '15px', fontWeight: '600', color: '#111827' }}>Prescription & Visit History</h2>
+            <p style={{ fontSize: '12px', color: '#9ca3af', marginTop: '2px' }}>
+              Every visit's symptoms, diagnosis, and prescription — most recent first
+            </p>
+          </div>
+
+          {prescriptions.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '40px', color: '#9ca3af', fontSize: '14px' }}>
+              No prescriptions recorded yet
+            </div>
+          ) : (
+            <div style={{ padding: '8px 20px' }}>
+              {prescriptions.map((rx, i) => (
+                <div key={rx.id} style={{
+                  padding: '16px 0',
+                  borderBottom: i < prescriptions.length - 1 ? '1px solid #f3f4f6' : 'none'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                    <p style={{ fontSize: '13px', fontWeight: '600', color: '#16a34a' }}>
+                      Visit — {new Date(rx.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    </p>
+                    {rx.doctor_name && (
+                      <p style={{ fontSize: '12px', color: '#9ca3af' }}>Dr. {rx.doctor_name}</p>
+                    )}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                    {rx.symptoms && (
+                      <div>
+                        <p style={{ fontSize: '11px', color: '#9ca3af', fontWeight: '500', marginBottom: '2px' }}>SYMPTOMS</p>
+                        <p style={{ fontSize: '13px', color: '#111827' }}>{rx.symptoms}</p>
+                      </div>
+                    )}
+                    {rx.diagnosis && (
+                      <div>
+                        <p style={{ fontSize: '11px', color: '#9ca3af', fontWeight: '500', marginBottom: '2px' }}>DIAGNOSIS</p>
+                        <p style={{ fontSize: '13px', color: '#111827' }}>{rx.diagnosis}</p>
+                      </div>
+                    )}
+                    {rx.prescription && (
+                      <div style={{ gridColumn: '1 / -1' }}>
+                        <p style={{ fontSize: '11px', color: '#9ca3af', fontWeight: '500', marginBottom: '2px' }}>PRESCRIPTION</p>
+                        <p style={{ fontSize: '13px', color: '#111827' }}>{rx.prescription}</p>
+                      </div>
+                    )}
+                    {rx.notes && (
+                      <div style={{ gridColumn: '1 / -1' }}>
+                        <p style={{ fontSize: '11px', color: '#9ca3af', fontWeight: '500', marginBottom: '2px' }}>NOTES</p>
+                        <p style={{ fontSize: '13px', color: '#111827' }}>{rx.notes}</p>
+                      </div>
+                    )}
+                    {rx.follow_up_date && (
+                      <div style={{ gridColumn: '1 / -1' }}>
+                        <p style={{ fontSize: '11px', color: '#9ca3af', fontWeight: '500', marginBottom: '2px' }}>FOLLOW-UP DATE</p>
+                        <p style={{ fontSize: '13px', color: '#d97706', fontWeight: '500' }}>{rx.follow_up_date}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       </div>

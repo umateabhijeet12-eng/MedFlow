@@ -22,6 +22,15 @@ const SPECIALIZATIONS = [
   'Ophthalmologist',
   'Neurologist',
   'Urologist',
+  'BAMS - General Ayurvedic Physician',
+  'BAMS - Panchakarma Specialist',
+  'BAMS - Ayurvedic Dermatologist (Twak Roga)',
+  'BAMS - Ayurvedic Gynaecologist (Prasuti Tantra)',
+  'BAMS - Kayachikitsa (Ayurvedic Internal Medicine)',
+  'BHMS - General Homeopathic Physician',
+  'BHMS - Homeopathic Dermatologist',
+  'BHMS - Homeopathic Paediatrician',
+  'BHMS - Homeopathic Gynaecologist',
   'Other',
 ]
 
