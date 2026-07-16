@@ -8,7 +8,6 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 )
-
 const NavBar = () => (
   <nav style={{
     background: '#fff', borderBottom: '1px solid #e5e7eb',
@@ -38,14 +37,15 @@ const NavBar = () => (
         </Link>
       ))}
     </div>
-    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-      <button onClick={async () => { await supabase.auth.signOut(); window.location.href = '/login' }} style={{
+    <button
+      onClick={async () => { await supabase.auth.signOut(); window.location.href = '/login' }}
+      style={{
         padding: '7px 14px', borderRadius: '7px', border: '1px solid #e5e7eb',
         background: '#fff', fontSize: '13px', color: '#6b7280', cursor: 'pointer'
-      }}>
-        Sign out
-      </button>
-    </div>
+      }}
+    >
+      Sign out
+    </button>
   </nav>
 )
 

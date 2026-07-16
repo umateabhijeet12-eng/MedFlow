@@ -55,6 +55,17 @@ const fuzzyMatch = (str, query) => {
   return true
 }
 
+const namesLikelyMatch = (nameA, nameB) => {
+  if (!nameA || !nameB) return false
+  const a = nameA.trim().toLowerCase()
+  const b = nameB.trim().toLowerCase()
+  if (a === b) return true
+  if (fuzzyMatch(a, b) || fuzzyMatch(b, a)) return true
+  const firstA = a.split(' ')[0]
+  const firstB = b.split(' ')[0]
+  return firstA === firstB && firstA.length > 2
+}
+
 export default function Patients() {
   const router = useRouter()
   const [patients, setPatients] = useState([])
@@ -64,6 +75,8 @@ export default function Patients() {
   const [saving, setSaving] = useState(false)
   const [search, setSearch] = useState('')
   const [matchedPatient, setMatchedPatient] = useState(null)
+  const [candidates, setCandidates] = useState([])
+  const [deleteTarget, setDeleteTarget] = useState(null)
   const [form, setForm] = useState({
     name: '',
     phone: '',
@@ -110,45 +123,76 @@ export default function Patients() {
   }
 
   const checkReturningPatient = async (updatedForm) => {
-    if (!updatedForm.name || !updatedForm.phone || !clinic) return
+    if (!updatedForm.phone || !clinic) {
+      setMatchedPatient(null)
+      setCandidates([])
+      return
+    }
+    const cleanPhone = updatedForm.phone.replace(/\D/g, '').slice(-10)
+    if (cleanPhone.length < 10) {
+      setMatchedPatient(null)
+      setCandidates([])
+      return
+    }
+
     const { data } = await supabase
       .from('patients')
       .select('*')
       .eq('clinic_id', clinic.id)
-      .ilike('name', updatedForm.name.trim())
-      .eq('phone', updatedForm.phone.trim())
 
-    if (data && data.length > 0) {
-      if (updatedForm.address) {
-        const addressMatch = data.find(p =>
-          p.address?.toLowerCase().trim() === updatedForm.address.toLowerCase().trim()
-        )
-        setMatchedPatient(addressMatch || data[0])
-      } else {
-        setMatchedPatient(data[0])
-      }
-    } else {
+    const phoneMatches = (data || []).filter(p => {
+      const existingPhone = (p.phone || '').replace(/\D/g, '').slice(-10)
+      return existingPhone === cleanPhone
+    })
+
+    if (phoneMatches.length === 0) {
       setMatchedPatient(null)
+      setCandidates([])
+      return
     }
+
+    if (updatedForm.name) {
+      const nameMatch = phoneMatches.find(p => namesLikelyMatch(p.name, updatedForm.name))
+      if (nameMatch) {
+        setMatchedPatient(nameMatch)
+        setCandidates(phoneMatches)
+        return
+      }
+    }
+
+    setMatchedPatient(null)
+    setCandidates(phoneMatches)
   }
 
   const handleFormChange = (key, value) => {
     const updated = { ...form, [key]: value }
     setForm(updated)
-    if (key === 'name' || key === 'phone' || key === 'address') {
+    if (key === 'name' || key === 'phone') {
       checkReturningPatient(updated)
     }
+  }
+
+  const selectCandidate = (patient) => {
+    setMatchedPatient(patient)
+    setForm(f => ({ ...f, name: patient.name, phone: patient.phone, address: patient.address || '' }))
+  }
+
+  const dismissCandidates = () => {
+    setMatchedPatient(null)
+    setCandidates([])
   }
 
   const handleAdd = async () => {
     if (!form.name || !form.phone) return
     setSaving(true)
 
+    const digitsOnly = (form.age || '').toString().replace(/[^0-9]/g, '')
+    const cleanAge = digitsOnly.length > 0 ? parseInt(digitsOnly, 10) : null
+
     if (matchedPatient) {
-      // Returning patient — save prescription and go to their profile
       const hasPrescription = prescription.symptoms || prescription.diagnosis || prescription.prescription || prescription.notes
       if (hasPrescription) {
-        await supabase.from('prescriptions').insert([{
+        const { error: rxError } = await supabase.from('prescriptions').insert([{
           clinic_id: clinic.id,
           patient_id: matchedPatient.id,
           doctor_name: clinic.doctor_name,
@@ -158,23 +202,40 @@ export default function Patients() {
           notes: prescription.notes,
           follow_up_date: prescription.follow_up_date || null,
         }])
+        if (rxError) {
+          alert('Error saving prescription: ' + rxError.message)
+          setSaving(false)
+          return
+        }
       }
       router.push(`/patients/${matchedPatient.id}`)
       return
     }
 
-    // New patient — create record
-    const { data: newPatient } = await supabase
+    const { data: newPatient, error: patientError } = await supabase
       .from('patients')
-      .insert([{ clinic_id: clinic.id, ...form }])
+      .insert([{
+        name: form.name,
+        phone: form.phone,
+        gender: form.gender,
+        address: form.address,
+        medical_history: form.medical_history,
+        clinic_id: clinic.id,
+        age: cleanAge,
+      }])
       .select()
       .single()
 
-    // Save prescription if filled
+    if (patientError) {
+      alert('Error saving patient: ' + patientError.message)
+      setSaving(false)
+      return
+    }
+
     if (newPatient) {
       const hasPrescription = prescription.symptoms || prescription.diagnosis || prescription.prescription || prescription.notes
       if (hasPrescription) {
-        await supabase.from('prescriptions').insert([{
+        const { error: rxError } = await supabase.from('prescriptions').insert([{
           clinic_id: clinic.id,
           patient_id: newPatient.id,
           doctor_name: clinic.doctor_name,
@@ -184,19 +245,24 @@ export default function Patients() {
           notes: prescription.notes,
           follow_up_date: prescription.follow_up_date || null,
         }])
+        if (rxError) {
+          alert('Patient saved, but error saving prescription: ' + rxError.message)
+        }
       }
     }
 
     setForm({ name: '', phone: '', age: '', gender: '', address: '', medical_history: '' })
     setPrescription({ symptoms: '', diagnosis: '', prescription: '', notes: '', follow_up_date: '' })
     setMatchedPatient(null)
+    setCandidates([])
     setShowForm(false)
     await fetchPatients(clinic.id)
     setSaving(false)
   }
 
-  const handleDelete = async (id) => {
-    await supabase.from('patients').delete().eq('id', id)
+  const confirmDelete = async () => {
+    await supabase.from('patients').delete().eq('id', deleteTarget.id)
+    setDeleteTarget(null)
     await fetchPatients(clinic.id)
   }
 
@@ -218,7 +284,7 @@ export default function Patients() {
               {clinic?.clinic_name || 'Your clinic'} · {patients.length} patients
             </p>
           </div>
-          <button onClick={() => { setShowForm(true); setMatchedPatient(null) }} style={{
+          <button onClick={() => { setShowForm(true); setMatchedPatient(null); setCandidates([]) }} style={{
             background: '#16a34a', color: '#fff', padding: '10px 20px',
             borderRadius: '8px', border: 'none', cursor: 'pointer',
             fontSize: '14px', fontWeight: '500'
@@ -233,7 +299,45 @@ export default function Patients() {
             border: '1px solid #e5e7eb', padding: '24px', marginBottom: '24px'
           }}>
 
-            {/* Returning patient alert */}
+            {candidates.length > 0 && !matchedPatient && (
+              <div style={{
+                background: '#eff6ff', border: '1px solid #bfdbfe',
+                borderRadius: '10px', padding: '14px 16px', marginBottom: '20px'
+              }}>
+                <p style={{ fontSize: '14px', fontWeight: '600', color: '#2563eb', marginBottom: '4px' }}>
+                  📞 This phone number is linked to {candidates.length} existing patient{candidates.length > 1 ? 's' : ''}
+                </p>
+                <p style={{ fontSize: '12px', color: '#1e40af', marginBottom: '12px' }}>
+                  Is this one of them, or a new person using the same number (e.g. a family member)?
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {candidates.map(c => (
+                    <button
+                      key={c.id}
+                      onClick={() => selectCandidate(c)}
+                      style={{
+                        textAlign: 'left', background: '#fff', border: '1px solid #bfdbfe',
+                        borderRadius: '8px', padding: '10px 12px', cursor: 'pointer',
+                        fontSize: '13px', color: '#111827'
+                      }}
+                    >
+                      <strong>{c.name}</strong> · {c.medflow_id} · {c.address || 'No address on file'}
+                    </button>
+                  ))}
+                  <button
+                    onClick={dismissCandidates}
+                    style={{
+                      textAlign: 'left', background: '#f9fafb', border: '1px dashed #d1d5db',
+                      borderRadius: '8px', padding: '10px 12px', cursor: 'pointer',
+                      fontSize: '13px', color: '#6b7280'
+                    }}
+                  >
+                    None of these — this is a new patient
+                  </button>
+                </div>
+              </div>
+            )}
+
             {matchedPatient && (
               <div style={{
                 background: '#fffbeb', border: '1px solid #fde68a',
@@ -242,7 +346,7 @@ export default function Patients() {
               }}>
                 <div>
                   <p style={{ fontSize: '14px', fontWeight: '600', color: '#d97706' }}>
-                    🔄 Returning Patient Detected!
+                    🔄 Returning Patient Confirmed
                   </p>
                   <p style={{ fontSize: '13px', color: '#92400e', marginTop: '2px' }}>
                     {matchedPatient.name} · {matchedPatient.medflow_id} · {matchedPatient.phone}
@@ -251,56 +355,108 @@ export default function Patients() {
                     Fill prescription below and click Save to add this visit to their history
                   </p>
                 </div>
-                <button
-                  onClick={() => router.push(`/patients/${matchedPatient.id}`)}
-                  style={{
-                    background: '#d97706', color: '#fff', padding: '8px 16px',
-                    borderRadius: '7px', border: 'none', cursor: 'pointer',
-                    fontSize: '13px', fontWeight: '500'
-                  }}
-                >
-                  View Profile →
-                </button>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    onClick={() => setMatchedPatient(null)}
+                    style={{
+                      background: '#fff', color: '#92400e', padding: '8px 12px',
+                      borderRadius: '7px', border: '1px solid #fde68a', cursor: 'pointer',
+                      fontSize: '12px', fontWeight: '500'
+                    }}
+                  >
+                    Not them
+                  </button>
+                  <button
+                    onClick={() => router.push(`/patients/${matchedPatient.id}`)}
+                    style={{
+                      background: '#d97706', color: '#fff', padding: '8px 16px',
+                      borderRadius: '7px', border: 'none', cursor: 'pointer',
+                      fontSize: '13px', fontWeight: '500'
+                    }}
+                  >
+                    View Profile →
+                  </button>
+                </div>
               </div>
             )}
 
-            {/* Patient details — only show for new patients */}
             {!matchedPatient && (
               <>
                 <h2 style={{ fontSize: '15px', fontWeight: '600', marginBottom: '16px', color: '#111827' }}>
                   Patient Details
                 </h2>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
-                  {[
-                    { key: 'name', label: 'Full Name *', placeholder: 'Enter patient name' },
-                    { key: 'phone', label: 'Phone / WhatsApp *', placeholder: 'Enter phone number' },
-                    { key: 'age', label: 'Age', placeholder: 'Enter age' },
-                    { key: 'address', label: 'Address', placeholder: 'Enter address' },
-                  ].map(field => (
-                    <div key={field.key}>
-                      <label style={{ fontSize: '13px', fontWeight: '500', color: '#374151', display: 'block', marginBottom: '6px' }}>
-                        {field.label}
-                      </label>
-                      <input
-                        type="text"
-                        placeholder={field.placeholder}
-                        value={form[field.key]}
-                        onChange={e => handleFormChange(field.key, e.target.value)}
-                        style={{
-                          width: '100%', padding: '10px 12px', borderRadius: '8px',
-                          border: '1px solid #e5e7eb', fontSize: '14px',
-                          outline: 'none', color: '#111827', boxSizing: 'border-box'
-                        }}
-                      />
-                    </div>
-                  ))}
+                  <div>
+                    <label style={{ fontSize: '13px', fontWeight: '500', color: '#374151', display: 'block', marginBottom: '6px' }}>
+                      Full Name *
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Enter patient name"
+                      value={form.name}
+                      onChange={e => handleFormChange('name', e.target.value)}
+                      style={{
+                        width: '100%', padding: '10px 12px', borderRadius: '8px',
+                        border: `1px solid ${candidates.length > 0 ? '#bfdbfe' : '#e5e7eb'}`,
+                        fontSize: '14px', outline: 'none', color: '#111827', boxSizing: 'border-box'
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '13px', fontWeight: '500', color: '#374151', display: 'block', marginBottom: '6px' }}>
+                      Phone / WhatsApp *
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Enter phone number"
+                      value={form.phone}
+                      onChange={e => handleFormChange('phone', e.target.value)}
+                      style={{
+                        width: '100%', padding: '10px 12px', borderRadius: '8px',
+                        border: `1px solid ${candidates.length > 0 ? '#bfdbfe' : '#e5e7eb'}`,
+                        fontSize: '14px', outline: 'none', color: '#111827', boxSizing: 'border-box'
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '13px', fontWeight: '500', color: '#374151', display: 'block', marginBottom: '6px' }}>
+                      Age
+                    </label>
+                    <input
+                      type="number"
+                      placeholder="Enter age"
+                      value={form.age}
+                      onChange={e => setForm(f => ({ ...f, age: e.target.value }))}
+                      style={{
+                        width: '100%', padding: '10px 12px', borderRadius: '8px',
+                        border: '1px solid #e5e7eb', fontSize: '14px',
+                        outline: 'none', color: '#111827', boxSizing: 'border-box'
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '13px', fontWeight: '500', color: '#374151', display: 'block', marginBottom: '6px' }}>
+                      Address
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Enter address"
+                      value={form.address}
+                      onChange={e => setForm(f => ({ ...f, address: e.target.value }))}
+                      style={{
+                        width: '100%', padding: '10px 12px', borderRadius: '8px',
+                        border: '1px solid #e5e7eb', fontSize: '14px',
+                        outline: 'none', color: '#111827', boxSizing: 'border-box'
+                      }}
+                    />
+                  </div>
                   <div>
                     <label style={{ fontSize: '13px', fontWeight: '500', color: '#374151', display: 'block', marginBottom: '6px' }}>
                       Gender
                     </label>
                     <select
                       value={form.gender}
-                      onChange={e => handleFormChange('gender', e.target.value)}
+                      onChange={e => setForm(f => ({ ...f, gender: e.target.value }))}
                       style={{
                         width: '100%', padding: '10px 12px', borderRadius: '8px',
                         border: '1px solid #e5e7eb', fontSize: '14px',
@@ -321,7 +477,7 @@ export default function Patients() {
                       type="text"
                       placeholder="Diabetes, BP, etc."
                       value={form.medical_history}
-                      onChange={e => handleFormChange('medical_history', e.target.value)}
+                      onChange={e => setForm(f => ({ ...f, medical_history: e.target.value }))}
                       style={{
                         width: '100%', padding: '10px 12px', borderRadius: '8px',
                         border: '1px solid #e5e7eb', fontSize: '14px',
@@ -333,35 +489,6 @@ export default function Patients() {
               </>
             )}
 
-            {/* Name + phone fields for returning patient */}
-            {matchedPatient && (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
-                {[
-                  { key: 'name', label: 'Full Name *', placeholder: 'Enter patient name' },
-                  { key: 'phone', label: 'Phone / WhatsApp *', placeholder: 'Enter phone number' },
-                  { key: 'address', label: 'Address', placeholder: 'Enter address' },
-                ].map(field => (
-                  <div key={field.key}>
-                    <label style={{ fontSize: '13px', fontWeight: '500', color: '#374151', display: 'block', marginBottom: '6px' }}>
-                      {field.label}
-                    </label>
-                    <input
-                      type="text"
-                      placeholder={field.placeholder}
-                      value={form[field.key]}
-                      onChange={e => handleFormChange(field.key, e.target.value)}
-                      style={{
-                        width: '100%', padding: '10px 12px', borderRadius: '8px',
-                        border: '1px solid #fde68a', fontSize: '14px',
-                        outline: 'none', color: '#111827', boxSizing: 'border-box'
-                      }}
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Prescription section */}
             <div style={{
               borderTop: '1px solid #f3f4f6', paddingTop: '20px', marginTop: '4px'
             }}>
@@ -422,7 +549,7 @@ export default function Patients() {
               }}>
                 {saving ? 'Saving...' : matchedPatient ? 'Save Visit & Go to Profile' : 'Add Patient'}
               </button>
-              <button onClick={() => { setShowForm(false); setMatchedPatient(null) }} style={{
+              <button onClick={() => { setShowForm(false); setMatchedPatient(null); setCandidates([]) }} style={{
                 background: '#fff', color: '#6b7280', padding: '10px 24px',
                 borderRadius: '8px', border: '1px solid #e5e7eb', cursor: 'pointer', fontSize: '14px'
               }}>
@@ -498,7 +625,7 @@ export default function Patients() {
                       }}>
                         View History
                       </Link>
-                      <button onClick={() => handleDelete(p.id)} style={{
+                      <button onClick={() => setDeleteTarget(p)} style={{
                         background: '#fff5f5', color: '#ef4444', padding: '6px 12px',
                         borderRadius: '6px', border: '1px solid #fecaca',
                         fontSize: '12px', cursor: 'pointer', fontWeight: '500'
@@ -513,6 +640,36 @@ export default function Patients() {
           )}
         </div>
       </div>
+
+      {deleteTarget && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50
+        }}>
+          <div style={{ background: '#fff', borderRadius: '12px', padding: '24px', maxWidth: '360px' }}>
+            <p style={{ fontSize: '15px', fontWeight: '600', color: '#111827', marginBottom: '8px' }}>
+              Delete {deleteTarget.name}?
+            </p>
+            <p style={{ fontSize: '13px', color: '#6b7280', marginBottom: '20px' }}>
+              This cannot be undone.
+            </p>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button onClick={confirmDelete} style={{
+                background: '#ef4444', color: '#fff', padding: '9px 18px',
+                borderRadius: '8px', border: 'none', cursor: 'pointer', fontSize: '14px', fontWeight: '500'
+              }}>
+                Delete
+              </button>
+              <button onClick={() => setDeleteTarget(null)} style={{
+                background: '#fff', color: '#6b7280', padding: '9px 18px',
+                borderRadius: '8px', border: '1px solid #e5e7eb', cursor: 'pointer', fontSize: '14px'
+              }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

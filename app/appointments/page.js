@@ -26,13 +26,13 @@ const NavBar = () => (
     </div>
     <div style={{ display: 'flex', gap: '24px' }}>
       {[
-  { label: 'Dashboard', href: '/dashboard' },
-  { label: 'Patients', href: '/patients' },
-  { label: 'Appointments', href: '/appointments' },
-  { label: 'Follow-ups', href: '/followups' },
-  { label: 'Reviews', href: '/reviews' },
-  { label: 'Settings', href: '/settings' },
-].map(link => (
+        { label: 'Dashboard', href: '/dashboard' },
+        { label: 'Patients', href: '/patients' },
+        { label: 'Appointments', href: '/appointments' },
+        { label: 'Follow-ups', href: '/followups' },
+        { label: 'Reviews', href: '/reviews' },
+        { label: 'Settings', href: '/settings' },
+      ].map(link => (
         <Link key={link.href} href={link.href} style={{ fontSize: '14px', color: '#6b7280', fontWeight: '500' }}>
           {link.label}
         </Link>
@@ -49,6 +49,31 @@ const STATUS_COLORS = {
   cancelled: { bg: '#fff5f5', color: '#ef4444', label: 'Cancelled' },
 }
 
+const fuzzyMatch = (str, query) => {
+  if (!str || !query) return false
+  str = str.toLowerCase()
+  query = query.toLowerCase()
+  if (str.includes(query)) return true
+  let si = 0
+  for (let qi = 0; qi < query.length; qi++) {
+    while (si < str.length && str[si] !== query[qi]) si++
+    if (si >= str.length) return false
+    si++
+  }
+  return true
+}
+
+const namesLikelyMatch = (nameA, nameB) => {
+  if (!nameA || !nameB) return false
+  const a = nameA.trim().toLowerCase()
+  const b = nameB.trim().toLowerCase()
+  if (a === b) return true
+  if (fuzzyMatch(a, b) || fuzzyMatch(b, a)) return true
+  const firstA = a.split(' ')[0]
+  const firstB = b.split(' ')[0]
+  return firstA === firstB && firstA.length > 2
+}
+
 export default function Appointments() {
   const router = useRouter()
   const [appointments, setAppointments] = useState([])
@@ -60,6 +85,8 @@ export default function Appointments() {
   const [slots, setSlots] = useState([])
   const [services, setServices] = useState([])
   const [revenue, setRevenue] = useState(0)
+  const [matchedPatient, setMatchedPatient] = useState(null)
+  const [candidates, setCandidates] = useState([])
   const [form, setForm] = useState({
     patient_name: '',
     patient_phone: '',
@@ -86,7 +113,6 @@ export default function Appointments() {
       if (data) {
         setClinic(data)
         setForm(f => ({ ...f, doctor: data.doctor_name || '' }))
-        // Fetch services
         const { data: servicesData } = await supabase
           .from('services')
           .select('*')
@@ -122,7 +148,6 @@ export default function Appointments() {
     const { data } = await query
     setAppointments(data || [])
 
-    // Fetch daily revenue
     const { data: revenueData } = await supabase
       .from('appointments')
       .select('fee')
@@ -131,6 +156,68 @@ export default function Appointments() {
       .eq('payment_status', 'paid')
     const total = revenueData?.reduce((sum, a) => sum + (parseFloat(a.fee) || 0), 0) || 0
     setRevenue(total)
+  }
+
+  // Phone number finds all patients using that number (could be a shared family phone).
+  // Name then confirms who it is, or we show a picker when it's ambiguous.
+  const checkReturningPatient = async (updatedForm) => {
+    if (!updatedForm.patient_phone || !clinic) {
+      setMatchedPatient(null)
+      setCandidates([])
+      return
+    }
+    const cleanPhone = updatedForm.patient_phone.replace(/\D/g, '').slice(-10)
+    if (cleanPhone.length < 10) {
+      setMatchedPatient(null)
+      setCandidates([])
+      return
+    }
+
+    const { data } = await supabase
+      .from('patients')
+      .select('*')
+      .eq('clinic_id', clinic.id)
+
+    const phoneMatches = (data || []).filter(p => {
+      const existingPhone = (p.phone || '').replace(/\D/g, '').slice(-10)
+      return existingPhone === cleanPhone
+    })
+
+    if (phoneMatches.length === 0) {
+      setMatchedPatient(null)
+      setCandidates([])
+      return
+    }
+
+    if (updatedForm.patient_name) {
+      const nameMatch = phoneMatches.find(p => namesLikelyMatch(p.name, updatedForm.patient_name))
+      if (nameMatch) {
+        setMatchedPatient(nameMatch)
+        setCandidates(phoneMatches)
+        return
+      }
+    }
+
+    setMatchedPatient(null)
+    setCandidates(phoneMatches)
+  }
+
+  const handleFieldChange = (key, value) => {
+    const updated = { ...form, [key]: value }
+    setForm(updated)
+    if (key === 'patient_name' || key === 'patient_phone') {
+      checkReturningPatient(updated)
+    }
+  }
+
+  const selectCandidate = (patient) => {
+    setMatchedPatient(patient)
+    setForm(f => ({ ...f, patient_name: patient.name, patient_phone: patient.phone }))
+  }
+
+  const dismissCandidates = () => {
+    setMatchedPatient(null)
+    setCandidates([])
   }
 
   const generateSlots = async () => {
@@ -164,23 +251,35 @@ export default function Appointments() {
     if (!form.patient_name || !form.patient_phone || !form.appointment_time || !form.service_id) return
     setSaving(true)
 
-    // Save appointment
-    await supabase.from('appointments').insert([{ clinic_id: clinic.id, ...form }])
+    const { error: apptError } = await supabase.from('appointments').insert([{ clinic_id: clinic.id, ...form }])
+    if (apptError) {
+      alert('Error saving appointment: ' + apptError.message)
+      setSaving(false)
+      return
+    }
 
-    // Auto-add patient if not already in patients table
-    const { data: existingPatient } = await supabase
-      .from('patients')
-      .select('id')
-      .eq('clinic_id', clinic.id)
-      .eq('phone', form.patient_phone)
-      .single()
+    // Use matched patient if detected, otherwise auto-create (MedFlow ID generated automatically by DB trigger)
+    if (!matchedPatient) {
+      const cleanPhone = form.patient_phone.replace(/\D/g, '').slice(-10)
+      const { data: allPatients } = await supabase
+        .from('patients')
+        .select('id, phone')
+        .eq('clinic_id', clinic.id)
 
-    if (!existingPatient) {
-      await supabase.from('patients').insert([{
-        clinic_id: clinic.id,
-        name: form.patient_name,
-        phone: form.patient_phone,
-      }])
+      const alreadyExists = (allPatients || []).some(p =>
+        (p.phone || '').replace(/\D/g, '').slice(-10) === cleanPhone
+      )
+
+      if (!alreadyExists) {
+        const { error: patientError } = await supabase.from('patients').insert([{
+          clinic_id: clinic.id,
+          name: form.patient_name,
+          phone: form.patient_phone,
+        }])
+        if (patientError) {
+          alert('Appointment saved, but error creating patient record: ' + patientError.message)
+        }
+      }
     }
 
     setForm({
@@ -194,6 +293,8 @@ export default function Appointments() {
       fee: '',
       payment_status: 'unpaid',
     })
+    setMatchedPatient(null)
+    setCandidates([])
     setShowForm(false)
     await fetchAppointments()
     setSaving(false)
@@ -237,7 +338,6 @@ export default function Appointments() {
           </div>
         </div>
 
-        {/* New appointment form */}
         {showForm && (
           <div style={{
             background: '#fff', borderRadius: '12px',
@@ -246,6 +346,84 @@ export default function Appointments() {
             <h2 style={{ fontSize: '15px', fontWeight: '600', marginBottom: '20px', color: '#111827' }}>
               New Appointment
             </h2>
+
+            {/* Ambiguous match — multiple people share this phone, or name isn't clear yet */}
+            {candidates.length > 0 && !matchedPatient && (
+              <div style={{
+                background: '#eff6ff', border: '1px solid #bfdbfe',
+                borderRadius: '10px', padding: '14px 16px', marginBottom: '20px'
+              }}>
+                <p style={{ fontSize: '14px', fontWeight: '600', color: '#2563eb', marginBottom: '4px' }}>
+                  📞 This phone number is linked to {candidates.length} existing patient{candidates.length > 1 ? 's' : ''}
+                </p>
+                <p style={{ fontSize: '12px', color: '#1e40af', marginBottom: '12px' }}>
+                  Is this one of them, or a new person using the same number (e.g. a family member)?
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {candidates.map(c => (
+                    <button
+                      key={c.id}
+                      onClick={() => selectCandidate(c)}
+                      style={{
+                        textAlign: 'left', background: '#fff', border: '1px solid #bfdbfe',
+                        borderRadius: '8px', padding: '10px 12px', cursor: 'pointer',
+                        fontSize: '13px', color: '#111827'
+                      }}
+                    >
+                      <strong>{c.name}</strong> · {c.medflow_id} · {c.address || 'No address on file'}
+                    </button>
+                  ))}
+                  <button
+                    onClick={dismissCandidates}
+                    style={{
+                      textAlign: 'left', background: '#f9fafb', border: '1px dashed #d1d5db',
+                      borderRadius: '8px', padding: '10px 12px', cursor: 'pointer',
+                      fontSize: '13px', color: '#6b7280'
+                    }}
+                  >
+                    None of these — this is a new patient
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Confirmed returning patient */}
+            {matchedPatient && (
+              <div style={{
+                background: '#fffbeb', border: '1px solid #fde68a',
+                borderRadius: '10px', padding: '14px 16px', marginBottom: '20px',
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center'
+              }}>
+                <div>
+                  <p style={{ fontSize: '14px', fontWeight: '600', color: '#d97706' }}>
+                    🔄 Returning Patient Confirmed
+                  </p>
+                  <p style={{ fontSize: '13px', color: '#92400e', marginTop: '2px' }}>
+                    {matchedPatient.name} · {matchedPatient.medflow_id} · {matchedPatient.phone}
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    onClick={() => setMatchedPatient(null)}
+                    style={{
+                      background: '#fff', color: '#92400e', padding: '8px 12px',
+                      borderRadius: '7px', border: '1px solid #fde68a', cursor: 'pointer',
+                      fontSize: '12px', fontWeight: '500'
+                    }}
+                  >
+                    Not them
+                  </button>
+                  <Link href={`/patients/${matchedPatient.id}`} style={{
+                    background: '#d97706', color: '#fff', padding: '8px 16px',
+                    borderRadius: '7px', border: 'none', cursor: 'pointer',
+                    fontSize: '13px', fontWeight: '500', textDecoration: 'none'
+                  }}>
+                    View Profile →
+                  </Link>
+                </div>
+              </div>
+            )}
+
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
               {[
                 { key: 'patient_name', label: 'Patient Name', placeholder: 'Enter patient name', type: 'text' },
@@ -261,10 +439,17 @@ export default function Appointments() {
                     type={field.type}
                     placeholder={field.placeholder}
                     value={form[field.key]}
-                    onChange={e => setForm({ ...form, [field.key]: e.target.value })}
+                    onChange={e => {
+                      if (field.key === 'patient_name' || field.key === 'patient_phone') {
+                        handleFieldChange(field.key, e.target.value)
+                      } else {
+                        setForm(f => ({ ...f, [field.key]: e.target.value }))
+                      }
+                    }}
                     style={{
                       width: '100%', padding: '10px 12px', borderRadius: '8px',
-                      border: '1px solid #e5e7eb', fontSize: '14px',
+                      border: `1px solid ${candidates.length > 0 && (field.key === 'patient_name' || field.key === 'patient_phone') ? '#bfdbfe' : '#e5e7eb'}`,
+                      fontSize: '14px',
                       outline: 'none', color: '#111827', boxSizing: 'border-box'
                     }}
                   />
@@ -378,7 +563,7 @@ export default function Appointments() {
               }}>
                 {saving ? 'Booking...' : 'Book Appointment'}
               </button>
-              <button onClick={() => setShowForm(false)} style={{
+              <button onClick={() => { setShowForm(false); setMatchedPatient(null); setCandidates([]) }} style={{
                 background: '#fff', color: '#6b7280', padding: '10px 24px',
                 borderRadius: '8px', border: '1px solid #e5e7eb', cursor: 'pointer', fontSize: '14px'
               }}>
@@ -388,7 +573,6 @@ export default function Appointments() {
           </div>
         )}
 
-        {/* Filters */}
         <div style={{
           background: '#fff', borderRadius: '12px',
           border: '1px solid #e5e7eb', padding: '12px 16px',
@@ -411,7 +595,6 @@ export default function Appointments() {
           ))}
         </div>
 
-        {/* Appointments table */}
         <div style={{
           background: '#fff', borderRadius: '12px',
           border: '1px solid #e5e7eb', overflow: 'hidden'
